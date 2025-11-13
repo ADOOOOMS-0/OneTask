@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OneTask</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              'high-priority': 'hsl(0, 70%, 95%)',
+              'high-priority-border': 'hsl(0, 80%, 80%)',
+              'high-priority-text': 'hsl(0, 80%, 40%)',
+              'medium-priority': 'hsl(39, 100%, 95%)',
+              'medium-priority-border': 'hsl(39, 100%, 80%)',
+              'medium-priority-text': 'hsl(39, 100%, 35%)',
+              'low-priority': 'hsl(200, 80%, 95%)',
+              'low-priority-border': 'hsl(200, 80%, 80%)',
+              'low-priority-text': 'hsl(200, 80%, 40%)',
+            }
+          }
+        }
+      }
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-slate-50 dark:bg-slate-900">
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
