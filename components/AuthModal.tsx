@@ -1,23 +1,25 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { User } from '../types';
 import { XMarkIcon, EyeIcon, EyeSlashIcon } from './icons';
 
-// In a real app, this would be a proper hashing function. For this simulation, we'll keep it simple.
-const fakeHash = (str: string) => `hashed_${str}`;
-
 interface AuthModalProps {
-  users: User[];
-  setUsers: React.Dispatch<React.SetStateAction<User[]>>;
   onClose: () => void;
-  onAccountCreated: (user: User) => void;
+  onLoginSuccess: (user: User) => void;
 }
 
 type AuthView = 'initial' | 'signIn' | 'signUp' | 'createPassword' | 'forgotPassword' | 'setNewPassword';
 
-const AuthModal: React.FC<AuthModalProps> = ({ users, setUsers, onClose, onAccountCreated }) => {
+const LOCAL_USERS_KEY = 'onetask_local_users';
+// Reduced timeout to fail fast in preview environments
+const API_TIMEOUT = 1000; 
+
+const AuthModal: React.FC<AuthModalProps> = ({ onClose, onLoginSuccess }) => {
   const [view, setView] = useState<AuthView>('initial');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const mountedRef = useRef(true);
 
   // Form states
   const [name, setName] = useState('');
@@ -25,77 +27,243 @@ const AuthModal: React.FC<AuthModalProps> = ({ users, setUsers, onClose, onAccou
   const [password, setPassword] = useState('');
   const [isPasswordVisible, setPasswordVisible] = useState(false);
   
-  const [userForPasswordReset, setUserForPasswordReset] = useState<User | null>(null);
-
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    inputRef.current?.focus();
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (view !== 'initial') {
+        // Small delay to ensure DOM update
+        setTimeout(() => inputRef.current?.focus(), 50);
+    }
   }, [view]);
+
+  // --- Helpers ---
+  
+  const generateId = () => {
+    // Robust ID generation safe for all environments
+    try {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+      }
+    } catch (e) { /* ignore */ }
+    
+    // Fallback for insecure contexts
+    return Date.now().toString(36) + Math.random().toString(36).substring(2);
+  };
+
+  const getLocalUsers = (): User[] => {
+    try {
+        const item = localStorage.getItem(LOCAL_USERS_KEY);
+        return item ? JSON.parse(item) : [];
+    } catch { 
+        return []; 
+    }
+  };
+
+  const saveLocalUser = (user: User) => {
+    try {
+        const users = getLocalUsers();
+        const existingIndex = users.findIndex(u => u.id === user.id);
+        if (existingIndex >= 0) {
+            users[existingIndex] = user;
+        } else {
+            users.push(user);
+        }
+        localStorage.setItem(LOCAL_USERS_KEY, JSON.stringify(users));
+    } catch (e) {
+        console.error("Failed to save local user", e);
+        throw new Error("Could not save account locally. Storage might be full.");
+    }
+  };
+
+  const createLocalUser = (name: string, email: string, passwordHash: string): User => {
+    const newUser: User = {
+        id: generateId(),
+        name,
+        email: email.toLowerCase(),
+        passwordHash, // Storing hash/token
+        createdAt: new Date().toISOString(),
+    };
+    saveLocalUser(newUser);
+    return newUser;
+  };
+
+  const safeSetError = (msg: string) => {
+      if (mountedRef.current) setError(msg);
+  };
+  
+  const safeSetIsLoading = (loading: boolean) => {
+      if (mountedRef.current) setIsLoading(loading);
+  };
+
+  // --- Handlers ---
+
+  const performLocalAuthAction = (action: 'signup' | 'signin' | 'reset', data: any) => {
+    try {
+        const localUsers = getLocalUsers();
+        
+        if (action === 'signup') {
+            if (localUsers.find(u => u.email.toLowerCase() === data.email.toLowerCase())) {
+                throw new Error('An account with this email already exists.');
+            }
+            const newUser = createLocalUser(data.name, data.email, `local_hash_${data.password}`);
+            return newUser;
+        }
+        
+        if (action === 'signin') {
+            const user = localUsers.find(u => u.email.toLowerCase() === data.email.toLowerCase());
+            if (user && user.passwordHash === `local_hash_${data.password}`) {
+                return user;
+            }
+            throw new Error('Invalid email or password.');
+        }
+
+        if (action === 'reset') {
+             const userIndex = localUsers.findIndex(u => u.email.toLowerCase() === data.email.toLowerCase());
+             if (userIndex >= 0) {
+                 localUsers[userIndex].passwordHash = `local_hash_${data.newPassword}`;
+                 localStorage.setItem(LOCAL_USERS_KEY, JSON.stringify(localUsers));
+                 return true;
+             }
+             throw new Error('User not found.');
+        }
+    } catch (e: any) {
+        throw e;
+    }
+  };
 
   const handleSignUp = (e: React.FormEvent) => {
     e.preventDefault();
-    if (users.find(u => u.email.toLowerCase() === email.toLowerCase())) {
-        setError('An account with this email already exists.');
-        return;
-    }
-    setView('createPassword');
-  };
-  
-  const handleCreatePassword = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (password.length < 6) {
-        setError('Password must be at least 6 characters long.');
+    if (!name.trim() || !email.trim()) {
+        safeSetError('Please enter your name and email.');
         return;
     }
     setError('');
-    const newUser: User = {
-        id: crypto.randomUUID(),
-        name,
-        email,
-        passwordHash: fakeHash(password),
-        createdAt: new Date().toISOString(),
-    };
-    setUsers([...users, newUser]);
-    onAccountCreated(newUser);
+    setView('createPassword');
   };
   
-  const handleSignIn = (e: React.FormEvent) => {
-    e.preventDefault();
-    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (user && user.passwordHash === fakeHash(password)) {
-        setError('');
-        onAccountCreated(user);
-    } else {
-        setError('Invalid email or password.');
-    }
-  };
-
-  const handleForgotPassword = (e: React.FormEvent) => {
-    e.preventDefault();
-    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (user) {
-        setUserForPasswordReset(user);
-        setView('setNewPassword');
-    } else {
-        setError('No account found with that email address.');
-    }
-  };
-
-  const handleSetNewPassword = (e: React.FormEvent) => {
+  const handleCreatePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (password.length < 6) {
-        setError('Password must be at least 6 characters long.');
+        safeSetError('Password must be at least 6 characters long.');
         return;
     }
-    if (userForPasswordReset) {
-        const updatedUsers = users.map(u => 
-            u.id === userForPasswordReset.id ? { ...u, passwordHash: fakeHash(password) } : u
+    setError('');
+    safeSetIsLoading(true);
+
+    try {
+        // We use Promise.race to enforce a strict timeout
+        const fetchPromise = fetch('/api/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, email, password }),
+        });
+
+        const timeoutPromise = new Promise<Response>((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout')), API_TIMEOUT)
         );
-        setUsers(updatedUsers);
-        setError('');
-        setMessage('Your password has been reset successfully. Please sign in.');
+
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
+        
+        const contentType = response.headers.get("content-type");
+        if (response.ok && contentType && contentType.includes("application/json")) {
+            const data = await response.json();
+            onLoginSuccess(data.user);
+            // Return here - finally block handles loading state
+            return;
+        } 
+        throw new Error('API Failed');
+    } catch (err) {
+        // Fallback to local
+        console.log("API unavailable, using local fallback");
+        try {
+            const newUser = performLocalAuthAction('signup', { name, email, password });
+            if (newUser && typeof newUser !== 'boolean') {
+                onLoginSuccess(newUser);
+            }
+        } catch (localErr: any) {
+            safeSetError(localErr.message || 'Failed to create account locally.');
+        }
+    } finally {
+        safeSetIsLoading(false);
+    }
+  };
+  
+  const handleSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    safeSetIsLoading(true);
+
+    try {
+        const fetchPromise = fetch('/api/auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+        });
+
+        const timeoutPromise = new Promise<Response>((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout')), API_TIMEOUT)
+        );
+
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
+        
+        const contentType = response.headers.get("content-type");
+        if (response.ok && contentType && contentType.includes("application/json")) {
+            const data = await response.json();
+            onLoginSuccess(data.user);
+            return;
+        }
+        
+        // If it's a 401 from a real server, we trust it.
+        // If it's a 404/500/HTML response (sandbox env), we fallback.
+        if (response.status === 401) {
+            safeSetError('Invalid email or password.');
+            return;
+        }
+        throw new Error('API Failed');
+    } catch (err) {
+        console.log("API unavailable, using local fallback");
+        try {
+            const user = performLocalAuthAction('signin', { email, password });
+            if (user && typeof user !== 'boolean') {
+                onLoginSuccess(user);
+            }
+        } catch (localErr: any) {
+             safeSetError('Invalid email or password.');
+        }
+    } finally {
+        safeSetIsLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    // For preview, skip the check and just let them reset if it exists locally
+    setView('setNewPassword');
+  };
+
+  const handleSetNewPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password.length < 6) {
+        safeSetError('Password must be at least 6 characters long.');
+        return;
+    }
+    setError('');
+    safeSetIsLoading(true);
+    
+    try {
+        performLocalAuthAction('reset', { email, newPassword: password });
+        setMessage('Password updated locally. Please sign in.');
         setView('signIn');
+    } catch (e) {
+        safeSetError('User not found.');
+    } finally {
+        safeSetIsLoading(false);
     }
   };
 
@@ -136,8 +304,8 @@ const AuthModal: React.FC<AuthModalProps> = ({ users, setUsers, onClose, onAccou
               <label htmlFor="email" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Email</label>
               <input type="email" id="email" value={email} onChange={e => setEmail(e.target.value)} required className="w-full input-style" />
             </div>
-            <button type="submit" className="w-full btn-primary">Continue</button>
-            <p className="text-center mt-4 text-sm">Already have an account? <button type="button" onClick={() => { resetForm(); setView('signIn'); }} className="link">Sign In</button></p>
+            <button type="submit" className="w-full btn-primary" disabled={isLoading}>Continue</button>
+            <p className="text-center mt-4 text-sm text-slate-600 dark:text-slate-400">Already have an account? <button type="button" onClick={() => { resetForm(); setView('signIn'); }} className="link" disabled={isLoading}>Sign In</button></p>
           </form>
         );
       case 'signIn':
@@ -157,10 +325,12 @@ const AuthModal: React.FC<AuthModalProps> = ({ users, setUsers, onClose, onAccou
                   </button>
                 </div>
               </div>
-              <button type="submit" className="w-full btn-primary">Sign In</button>
-              <div className="flex justify-between items-center mt-4 text-sm">
-                <p>No account? <button type="button" onClick={() => { resetForm(); setView('signUp'); }} className="link">Sign Up</button></p>
-                <button type="button" onClick={() => { resetForm(); setView('forgotPassword'); }} className="link">Forgot Password?</button>
+              <button type="submit" className="w-full btn-primary" disabled={isLoading}>
+                {isLoading ? 'Signing In...' : 'Sign In'}
+              </button>
+              <div className="flex justify-between items-center mt-4 text-sm text-slate-600 dark:text-slate-400">
+                <p>No account? <button type="button" onClick={() => { resetForm(); setView('signUp'); }} className="link" disabled={isLoading}>Sign Up</button></p>
+                <button type="button" onClick={() => { resetForm(); setView('forgotPassword'); }} className="link" disabled={isLoading}>Forgot Password?</button>
               </div>
             </form>
         );
@@ -177,7 +347,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ users, setUsers, onClose, onAccou
                   </button>
                 </div>
               </div>
-              <button type="submit" className="w-full btn-primary">Create Account</button>
+              <button type="submit" className="w-full btn-primary" disabled={isLoading}>
+                {isLoading ? 'Creating Account...' : 'Create Account'}
+              </button>
             </form>
         );
       case 'forgotPassword':
@@ -189,8 +361,10 @@ const AuthModal: React.FC<AuthModalProps> = ({ users, setUsers, onClose, onAccou
                 <label htmlFor="email" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Email</label>
                 <input type="email" id="email" ref={inputRef} value={email} onChange={e => setEmail(e.target.value)} required className="w-full input-style" />
               </div>
-              <button type="submit" className="w-full btn-primary">Continue</button>
-              <p className="text-center mt-4 text-sm"><button type="button" onClick={() => { resetForm(); setView('signIn'); }} className="link">Back to Sign In</button></p>
+              <button type="submit" className="w-full btn-primary" disabled={isLoading}>
+                {isLoading ? 'Sending...' : 'Continue'}
+              </button>
+              <p className="text-center mt-4 text-sm text-slate-600 dark:text-slate-400"><button type="button" onClick={() => { resetForm(); setView('signIn'); }} className="link" disabled={isLoading}>Back to Sign In</button></p>
             </form>
         );
       case 'setNewPassword':
@@ -206,7 +380,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ users, setUsers, onClose, onAccou
                   </button>
                 </div>
               </div>
-              <button type="submit" className="w-full btn-primary">Reset Password</button>
+              <button type="submit" className="w-full btn-primary" disabled={isLoading}>
+                {isLoading ? 'Resetting...' : 'Reset Password'}
+              </button>
             </form>
         );
     }
@@ -223,6 +399,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ users, setUsers, onClose, onAccou
             outline: none;
             box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
             transition: ring 0.2s;
+            background-color: #fff;
+            border-color: #cbd5e1;
+            color: #1e293b;
         }
         .input-style:focus {
             --tw-ring-color: #4f46e5;
@@ -234,11 +413,6 @@ const AuthModal: React.FC<AuthModalProps> = ({ users, setUsers, onClose, onAccou
             background-color: #334155;
             border-color: #475569;
             color: #e2e8f0;
-        }
-        .light .input-style {
-            background-color: #fff;
-            border-color: #cbd5e1;
-            color: #1e293b;
         }
         .btn-primary {
             padding: 0.625rem 1rem;

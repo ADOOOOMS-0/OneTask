@@ -9,6 +9,8 @@ export interface Task {
   priority: Priority;
   originalPriority?: Priority;
   estimatedTime?: number; // in minutes
+  autoPromoteDate?: string; // ISO string format
+  scheduledDate?: string; // ISO string format (YYYY-MM-DD) - when task appears on board
 }
 
 export interface Project {

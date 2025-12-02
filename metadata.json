@@ -1,5 +1,5 @@
 {
-  "name": "OneTask",
-  "description": "Your personal space to manage projects, track tasks, and conquer your goals.",
+  "name": "OneTask V2 - December 2025",
+  "description": "Added Functions:\n1. Added Auto-Priority Tools (Low->Medium Promotion based on Customizable Rules)\n2. Added the ability to schedule future tasks\n3. Changed appearance of adding tasks\n4. Added a overdue task warning\n5. Bug Fixes (Button Functionality Bug - Account Creation, Profile Editing, Project/Account Deletion Bug, Light Mode Readability Issue)",
   "requestFramePermissions": []
 }

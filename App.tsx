@@ -1,7 +1,6 @@
-
-
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Project, Task, Priority, User, CompletedTask } from './types';
+import useSessionStorage from './hooks/useSessionStorage';
 import useLocalStorage from './hooks/useLocalStorage';
 import Sidebar from './components/Sidebar';
 import TaskBoard from './components/TaskBoard';
@@ -16,10 +15,6 @@ import EditNameModal from './components/account-settings/EditNameModal';
 import EditEmailModal from './components/account-settings/EditEmailModal';
 import ChangePasswordModal from './components/account-settings/ChangePasswordModal';
 import UndoToast from './components/UndoToast';
-
-// In a real app, this would be a proper hashing function.
-// For simulation, we'll use a simple "hash".
-const fakeHash = (str: string) => `hashed_${str}`;
 
 const getInitials = (name: string) => {
     const names = name.split(' ');
@@ -43,16 +38,22 @@ interface UserData {
 
 type EditingField = 'picture' | 'name' | 'email' | 'password';
 
-type ItemToUndo = { item: Task | Project; type: 'task' | 'project'; context: { projectId?: string } };
+type DeletedItem = {
+    type: 'project';
+    item: Project;
+    index: number;
+} | {
+    type: 'task';
+    item: Task;
+    projectId: string;
+};
 
 const App: React.FC = () => {
   // --- Auth State ---
-  const [users, setUsers] = useLocalStorage<User[]>('onetask-users', []);
-  const [currentUser, setCurrentUser] = useLocalStorage<User | null>('onetask-currentUser', null);
+  const [currentUser, setCurrentUser] = useSessionStorage<User | null>('onetask-currentUser', null);
   const [isAuthModalOpen, setAuthModalOpen] = useState(false);
   
-  // --- App Data State (now user-specific) ---
-  const [userData, setUserData] = useLocalStorage<Record<string, UserData>>('onetask-userData', {});
+  // --- App Data State ---
   const [projects, setProjects] = useState<Project[]>([]);
   const [completedTasks, setCompletedTasks] = useState<CompletedTask[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -64,6 +65,7 @@ const App: React.FC = () => {
     autoPriorityHours: 24,
     isAutoRotationEnabled: false,
   });
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
 
   // --- UI State ---
   const [isUserMenuOpen, setUserMenuOpen] = useState(false);
@@ -71,61 +73,113 @@ const App: React.FC = () => {
   const [editingAccountField, setEditingAccountField] = useState<EditingField | null>(null);
 
   // --- Undo State ---
-  const [itemToUndo, setItemToUndo] = useState<ItemToUndo | null>(null);
-  const [itemToDelete, setItemToDelete] = useState<ItemToUndo | null>(null);
-  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [deletedItem, setDeletedItem] = useState<DeletedItem | null>(null);
+  const undoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // --- Helper to get local data key ---
+  const getLocalDataKey = (userId: string) => `onetask_data_${userId}`;
 
   // --- Load user data on login ---
   useEffect(() => {
     if (currentUser) {
-      const data = userData[currentUser.id] || {
-        projects: [],
-        completedTasks: [],
-        activeProjectId: null,
-        isSidebarOpen: true,
-        settings: {
-          theme: 'system',
-          isAutoPriorityModeEnabled: false,
-          autoPriorityDays: [],
-          autoPriorityHours: 24,
-          isAutoRotationEnabled: false,
+      setIsDataLoaded(false);
+      
+      // 1. Load from Local Storage (Offline/Sync Source)
+      const localDataJson = localStorage.getItem(getLocalDataKey(currentUser.id));
+      if (localDataJson) {
+          try {
+              const localData: UserData = JSON.parse(localDataJson);
+              setProjects(localData.projects || []);
+              setCompletedTasks(localData.completedTasks || []);
+              setActiveProjectId(localData.activeProjectId);
+              setSidebarOpen(localData.isSidebarOpen);
+              setSettings(localData.settings || settings);
+          } catch (e) { console.error("Error parsing local data", e); }
+      }
+
+      // 2. Try to fetch from API to sync (Best effort)
+      const fetchData = async () => {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 2000); // Short timeout for sync
+          
+          const response = await fetch('/api/data', {
+            headers: { 'x-user-id': currentUser.id },
+            signal: controller.signal
+          });
+          clearTimeout(timeout);
+          
+          const contentType = response.headers.get("content-type");
+          if (response.ok && contentType && contentType.includes("application/json")) {
+            const data: UserData = await response.json();
+            setProjects(data.projects || []);
+            setCompletedTasks(data.completedTasks || []);
+            setActiveProjectId(data.activeProjectId);
+            setSidebarOpen(data.isSidebarOpen);
+            setSettings(data.settings || settings);
+          }
+        } catch (error) {
+            // Silently fail to local mode
+            console.debug('Using local mode (API unreachable)');
+        } finally {
+            setIsDataLoaded(true);
         }
       };
-      setProjects(data.projects);
-      setCompletedTasks(data.completedTasks);
-      setActiveProjectId(data.activeProjectId);
-      setSidebarOpen(data.isSidebarOpen);
-      setSettings(data.settings);
+      
+      fetchData();
     } else {
       // Clear data on logout
       setProjects([]);
       setCompletedTasks([]);
       setActiveProjectId(null);
+      setIsDataLoaded(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustivedeps
   }, [currentUser]);
 
   // --- Save user data on change ---
-  const saveCurrentUserData = useCallback(() => {
-    if (currentUser) {
-      setUserData(prevData => ({
-        ...prevData,
-        [currentUser.id]: { projects, completedTasks, activeProjectId, isSidebarOpen, settings }
-      }));
-    }
-  }, [currentUser, projects, completedTasks, activeProjectId, isSidebarOpen, settings, setUserData]);
+  const saveData = useCallback(async (dataToSave: UserData) => {
+    if (!currentUser) return;
+    
+    // 1. Save to Local Storage (Always)
+    try {
+        localStorage.setItem(getLocalDataKey(currentUser.id), JSON.stringify(dataToSave));
+    } catch (e) { console.error("Local save failed", e); }
 
-  useEffect(() => {
-    if (currentUser) {
-      saveCurrentUserData();
+    // 2. Save to API (Best Effort)
+    try {
+      await fetch('/api/data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-id': currentUser.id,
+        },
+        body: JSON.stringify(dataToSave),
+      });
+    } catch (error) {
+       // Ignore network errors
     }
-  }, [projects, completedTasks, activeProjectId, isSidebarOpen, settings, currentUser, saveCurrentUserData]);
+  }, [currentUser]);
+
+  // Debounced save effect
+  useEffect(() => {
+    if (currentUser && isDataLoaded) {
+      const dataToSave = { projects, completedTasks, activeProjectId, isSidebarOpen, settings };
+      const handler = setTimeout(() => {
+        saveData(dataToSave);
+      }, 500); // 500ms debounce
+
+      return () => {
+        clearTimeout(handler);
+      };
+    }
+  }, [projects, completedTasks, activeProjectId, isSidebarOpen, settings, saveData, currentUser, isDataLoaded]);
 
 
   // --- Modals State ---
   const [isAddProjectModalOpen, setAddProjectModalOpen] = useState(false);
   const [isAddTaskModalOpen, setAddTaskModalOpen] = useState(false);
+  const [isSchedulingTask, setIsSchedulingTask] = useState(false);
   const [taskPriority, setTaskPriority] = useState<Priority>(Priority.Medium);
   const [isEditTaskModalOpen, setEditTaskModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -176,7 +230,7 @@ const App: React.FC = () => {
 
   // Auto-priority logic
   useEffect(() => {
-    if (!settings.isAutoPriorityModeEnabled) return;
+    if (!isDataLoaded) return;
 
     const isDueWithinTimeframe = (dueDateStr: string, hours: number) => {
         const today = new Date();
@@ -191,35 +245,49 @@ const App: React.FC = () => {
     const updatedProjects = projects.map(p => ({
       ...p,
       tasks: p.tasks.map(t => {
-        if (!t.dueDate) return t;
         let newTask = { ...t };
         let hasChanged = false;
-        const basePriority = t.originalPriority || t.priority;
+
+        // 1. Handle Low -> Medium Promotion
+        if (newTask.priority === Priority.Low && newTask.autoPromoteDate) {
+           const today = new Date();
+           today.setHours(0, 0, 0, 0);
+           const promoteDate = new Date(newTask.autoPromoteDate + 'T00:00:00');
+           
+           if (today.getTime() >= promoteDate.getTime()) {
+             newTask.priority = Priority.Medium;
+             delete newTask.autoPromoteDate; // Task is promoted, remove the trigger
+             hasChanged = true;
+           }
+        }
+
+        // 2. Handle Medium -> High Promotion (and Reverting)
+        const basePriority = newTask.originalPriority || newTask.priority;
 
         if (settings.isAutoPriorityModeEnabled) {
-          let shouldBePromoted = false;
-          if (basePriority === Priority.Medium) {
-            const isPromotableByDate = isDueWithinTimeframe(t.dueDate, settings.autoPriorityHours);
-            const taskDueDate = new Date(t.dueDate + 'T00:00:00');
-            const isDueOnSpecialDay = settings.autoPriorityDays.includes(taskDueDate.getDay());
-            shouldBePromoted = isPromotableByDate || isDueOnSpecialDay;
-          }
+            if (basePriority === Priority.Medium && newTask.dueDate) {
+                const isPromotableByDate = isDueWithinTimeframe(newTask.dueDate, settings.autoPriorityHours);
+                const taskDueDate = new Date(newTask.dueDate + 'T00:00:00');
+                const isDueOnSpecialDay = settings.autoPriorityDays.includes(taskDueDate.getDay());
+                const shouldBePromoted = isPromotableByDate || isDueOnSpecialDay;
 
-          if (shouldBePromoted && t.priority !== Priority.High) {
-            newTask = { ...t, priority: Priority.High, originalPriority: basePriority };
-            hasChanged = true;
-          }
-          else if (t.originalPriority && !shouldBePromoted) {
-            newTask = { ...t, priority: t.originalPriority };
-            delete newTask.originalPriority;
-            hasChanged = true;
-          }
+                if (shouldBePromoted && newTask.priority !== Priority.High) {
+                    newTask = { ...newTask, priority: Priority.High, originalPriority: basePriority };
+                    hasChanged = true;
+                } else if (newTask.originalPriority && !shouldBePromoted) {
+                    // Revert if conditions no longer met (but still in auto mode)
+                    newTask = { ...newTask, priority: newTask.originalPriority };
+                    delete newTask.originalPriority;
+                    hasChanged = true;
+                }
+            }
         } else {
-          if (t.originalPriority) {
-            newTask = { ...t, priority: t.originalPriority };
-            delete newTask.originalPriority;
-            hasChanged = true;
-          }
+            // Revert High -> Medium if Auto Mode is disabled
+            if (newTask.originalPriority) {
+                newTask = { ...newTask, priority: newTask.originalPriority };
+                delete newTask.originalPriority;
+                hasChanged = true;
+            }
         }
         
         if (hasChanged) {
@@ -233,76 +301,44 @@ const App: React.FC = () => {
     if (needsUpdate) {
       setProjects(updatedProjects);
     }
-  }, [settings.isAutoPriorityModeEnabled, projects, settings.autoPriorityDays, settings.autoPriorityHours]);
+  }, [settings.isAutoPriorityModeEnabled, projects, settings.autoPriorityDays, settings.autoPriorityHours, isDataLoaded]);
 
-  // --- UNDO/DELETE LOGIC ---
-  const startUndoTimer = (itemForUndo: ItemToUndo) => {
-    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    undoTimerRef.current = setTimeout(() => {
-      // When the timer expires, stage the item for deletion and hide the toast.
-      setItemToDelete(itemForUndo);
-      setItemToUndo(null); // This will trigger the fade-out animation on the toast.
-    }, 5000);
-  };
-  
-  // This effect handles the actual deletion after the toast has faded out.
-  useEffect(() => {
-    if (itemToDelete) {
-      // The toast is now hidden. Wait for the animation to finish, then delete.
-      const deleteTimer = setTimeout(() => {
-        const item = itemToDelete;
-        if (!item) return;
+  // --- UNDO LOGIC ---
+  const handleUndo = () => {
+    if (!deletedItem) return;
 
-        if (item.type === 'project') {
-          const updatedProjects = projects.filter(p => p.id !== item.item.id);
-          setProjects(updatedProjects);
-          if (activeProjectId === item.item.id) {
-            setActiveProjectId(updatedProjects.length > 0 ? updatedProjects[0].id : null);
-          }
-        } else if (item.type === 'task') {
-          const { projectId } = item.context;
-          if (!projectId) return;
-          setProjects(prevProjects => prevProjects.map(p => {
-            if (p.id === projectId) {
-              return { ...p, tasks: p.tasks.filter(t => t.id !== item.item.id) };
-            }
-            return p;
-          }));
+    if (deletedItem.type === 'project') {
+      const newProjects = [...projects];
+      newProjects.splice(deletedItem.index, 0, deletedItem.item);
+      setProjects(newProjects);
+      // Automatically switch back to the restored project if appropriate
+      setActiveProjectId(deletedItem.item.id);
+    } else if (deletedItem.type === 'task') {
+      const updatedProjects = projects.map(p => {
+        if (p.id === deletedItem.projectId) {
+          return { ...p, tasks: [...p.tasks, deletedItem.item] };
         }
-
-        // Clean up after deletion.
-        setItemToDelete(null);
-      }, 300); // This duration MUST match the toast's animation duration.
-
-      return () => clearTimeout(deleteTimer);
+        return p;
+      });
+      setProjects(updatedProjects);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [itemToDelete]);
-  
-  const cancelUndoableDelete = () => {
-    if (undoTimerRef.current) {
-      clearTimeout(undoTimerRef.current);
-      undoTimerRef.current = null;
-    }
-    // Prevent the deletion from happening and hide the toast.
-    setItemToDelete(null);
-    setItemToUndo(null);
+
+    setDeletedItem(null);
+    if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
   };
 
-  const getItemNameForUndo = () => {
-    if (!itemToUndo) return '';
-    const { item } = itemToUndo;
-    // Use a type guard to safely access the correct property
-    if ('title' in item) { // It's a Task
-        return item.title;
-    }
-    return item.name; // It's a Project
+  const registerDeletion = (item: DeletedItem) => {
+      setDeletedItem(item);
+      if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
+      undoTimeoutRef.current = setTimeout(() => {
+          setDeletedItem(null);
+          undoTimeoutRef.current = null;
+      }, 5000); // 5 seconds to undo
   };
-  // --- END UNDO/DELETE LOGIC ---
 
   const handleAddProject = (name: string) => {
     const newProject: Project = {
-      id: crypto.randomUUID(),
+      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
       name,
       tasks: [],
     };
@@ -312,11 +348,30 @@ const App: React.FC = () => {
   };
   
   const handleDeleteProject = (projectId: string) => {
-    const projectToDelete = projects.find(p => p.id === projectId);
+    const projectIndex = projects.findIndex(p => p.id === projectId);
+    const projectToDelete = projects[projectIndex];
+    
     if (projectToDelete) {
-        const item: ItemToUndo = { item: projectToDelete, type: 'project', context: {} };
-        setItemToUndo(item);
-        startUndoTimer(item);
+        // Immediate update
+        const updatedProjects = projects.filter(p => p.id !== projectId);
+        setProjects(updatedProjects);
+
+        // If we deleted the active project, select another one immediately
+        if (activeProjectId === projectId) {
+            if (updatedProjects.length > 0) {
+                // Try to stay at the same index, or go to the last one
+                const newIndex = Math.min(projectIndex, updatedProjects.length - 1);
+                setActiveProjectId(updatedProjects[newIndex].id);
+            } else {
+                setActiveProjectId(null);
+            }
+        }
+
+        registerDeletion({
+            type: 'project',
+            item: projectToDelete,
+            index: projectIndex
+        });
     }
   };
 
@@ -332,8 +387,15 @@ const App: React.FC = () => {
     setProjects(reorderedProjects);
   };
 
-  const handleOpenAddTaskModal = (priority: Priority) => {
-    setTaskPriority(priority);
+  const handleOpenAddTask = () => {
+    setTaskPriority(Priority.Medium);
+    setIsSchedulingTask(false);
+    setAddTaskModalOpen(true);
+  };
+
+  const handleOpenScheduleTask = () => {
+    setTaskPriority(Priority.Medium);
+    setIsSchedulingTask(true);
     setAddTaskModalOpen(true);
   };
 
@@ -341,7 +403,7 @@ const App: React.FC = () => {
     if (!activeProjectId) return;
     const newTask: Task = {
       ...taskData,
-      id: crypto.randomUUID(),
+      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     };
     const updatedProjects = projects.map((c) => {
       if (c.id === activeProjectId) {
@@ -359,13 +421,11 @@ const App: React.FC = () => {
   
   const handleEditTask = (updatedTask: Task) => {
     if (!activeProjectId) return;
-    const finalUpdatedTask: Task = { ...updatedTask };
-    delete finalUpdatedTask.originalPriority;
     const updatedProjects = projects.map((c) => {
         if (c.id === activeProjectId) {
             return {
                 ...c,
-                tasks: c.tasks.map(t => t.id === finalUpdatedTask.id ? finalUpdatedTask : t)
+                tasks: c.tasks.map(t => t.id === updatedTask.id ? updatedTask : t)
             };
         }
         return c;
@@ -379,10 +439,22 @@ const App: React.FC = () => {
     if (!activeProjectId) return;
     const project = projects.find(p => p.id === activeProjectId);
     const taskToDelete = project?.tasks.find(t => t.id === taskId);
-    if (taskToDelete) {
-        const item: ItemToUndo = { item: taskToDelete, type: 'task', context: { projectId: activeProjectId } };
-        setItemToUndo(item);
-        startUndoTimer(item);
+    
+    if (project && taskToDelete) {
+        // Immediate update
+        const updatedProjects = projects.map(p => {
+            if (p.id === activeProjectId) {
+              return { ...p, tasks: p.tasks.filter(t => t.id !== taskId) };
+            }
+            return p;
+        });
+        setProjects(updatedProjects);
+
+        registerDeletion({
+            type: 'task',
+            item: taskToDelete,
+            projectId: activeProjectId
+        });
     }
   };
 
@@ -417,53 +489,153 @@ const App: React.FC = () => {
     setSettings(newSettings);
   };
   
-  const handleUpdateUser = (updates: { name?: string; email?: string; newPassword?: string, profilePicture?: string | null }, currentPassword?: string): { success: boolean, message: string } => {
+  const handleUpdateUser = async (updates: { name?: string; email?: string; newPassword?: string, profilePicture?: string | null }, currentPassword?: string): Promise<{ success: boolean, message: string }> => {
     if (!currentUser) return { success: false, message: "No user is logged in." };
-    const userFromUsersArray = users.find(u => u.id === currentUser.id);
-    if (!userFromUsersArray) return { success: false, message: "Could not find user to update." };
-    const requiresPassword = 'name' in updates || 'email' in updates || 'newPassword' in updates;
-
-    if (requiresPassword) {
-      if (!currentPassword) {
-          return { success: false, message: "Password is required to make this change." };
-      }
-      if (fakeHash(currentPassword) !== userFromUsersArray.passwordHash) {
-        return { success: false, message: "The password you entered is incorrect." };
-      }
-    }
-
-    if (updates.email) {
-      const emailExists = users.some(u => u.email.toLowerCase() === updates.email!.toLowerCase() && u.id !== currentUser.id);
-      if (emailExists) {
-        return { success: false, message: "This email is already in use by another account." };
-      }
-    }
-
-    const updatedUser: User = { ...userFromUsersArray };
-    if (updates.name) updatedUser.name = updates.name;
-    if (updates.email) updatedUser.email = updates.email;
-    if (updates.newPassword) updatedUser.passwordHash = fakeHash(updates.newPassword);
-    if ('profilePicture' in updates) updatedUser.profilePicture = updates.profilePicture;
     
-    const updatedUsers = users.map(u => u.id === currentUser.id ? updatedUser : u);
-    setUsers(updatedUsers);
-    setCurrentUser(updatedUser);
-    return { success: true, message: "Your account has been updated successfully." };
+    // --- Local Update (Optimistic with checks) ---
+    let localUpdateSuccessful = false;
+    let localError = "";
+
+    try {
+        const localUsersStr = localStorage.getItem('onetask_local_users');
+        if (localUsersStr) {
+            const localUsers: User[] = JSON.parse(localUsersStr);
+            const index = localUsers.findIndex(u => u.id === currentUser.id);
+            if (index !== -1) {
+                const user = localUsers[index];
+
+                // Verify current password against ANY supported hash format
+                if ((updates.email || updates.newPassword) && currentPassword) {
+                    const storedHash = user.passwordHash;
+                    const isValid = storedHash === `local_hash_${currentPassword}` || storedHash === `hashed_${currentPassword}`;
+                    if (!isValid) {
+                        return { success: false, message: "The password you entered is incorrect." };
+                    }
+                }
+                
+                if (updates.name) user.name = updates.name;
+                if (updates.email) {
+                    // Simple uniqueness check
+                    if (localUsers.some(u => u.id !== user.id && u.email.toLowerCase() === updates.email?.toLowerCase())) {
+                        return { success: false, message: "This email is already in use." };
+                    }
+                    user.email = updates.email;
+                }
+                if ('profilePicture' in updates) user.profilePicture = updates.profilePicture;
+                if (updates.newPassword) user.passwordHash = `local_hash_${updates.newPassword}`;
+                
+                localUsers[index] = user;
+                localStorage.setItem('onetask_local_users', JSON.stringify(localUsers));
+                setCurrentUser(user);
+                localUpdateSuccessful = true;
+            }
+        }
+    } catch (e) { 
+        console.error(e);
+        localError = "Failed to update local storage.";
+    }
+
+    // --- Server Sync ---
+    try {
+        const fetchPromise = fetch('/api/users', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+            body: JSON.stringify({ 
+                updates, 
+                currentPassword,
+                email: currentUser.email // IMPORTANT: Pass current email for server lookup
+            }),
+        });
+        
+        // Timeout to prevent hanging in preview envs
+        const timeoutPromise = new Promise<Response>((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout')), 1500)
+        );
+
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
+        
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+             const data = await response.json();
+             if (response.ok) {
+                 setCurrentUser(data.user);
+                 return { success: true, message: "Account updated successfully." };
+             }
+             return { success: false, message: data.message || "An error occurred." };
+        }
+    } catch (err) {
+        // Fallback: If server failed/timed out, but local succeeded, report success.
+        if (localUpdateSuccessful) {
+             return { success: true, message: "Account updated locally." };
+        }
+    }
+    
+    // Default fallback
+    if (localUpdateSuccessful) return { success: true, message: "Account updated locally." };
+    return { success: false, message: localError || "Could not update account." };
   };
 
-  const handleDeleteUser = (password: string): { success: boolean, message: string } => {
+  const handleDeleteUser = async (password: string): Promise<{ success: boolean, message: string }> => {
     if (!currentUser) return { success: false, message: "No user is logged in." };
-    if (fakeHash(password) !== currentUser.passwordHash) {
-        return { success: false, message: "The password you entered is incorrect." };
+    
+    // Helper for local delete logic
+    const performLocalDelete = () => {
+         try {
+             // Local password check (Any format)
+            const pwdHash = currentUser.passwordHash;
+            const enteredHashLocal = `local_hash_${password}`;
+            const enteredHashApi = `hashed_${password}`;
+
+            if (pwdHash !== enteredHashLocal && pwdHash !== enteredHashApi) {
+                return { success: false, message: "The password you entered is incorrect." };
+            }
+
+            const localUsersStr = localStorage.getItem('onetask_local_users');
+            if (localUsersStr) {
+                const localUsers: User[] = JSON.parse(localUsersStr);
+                const newUsers = localUsers.filter(u => u.id !== currentUser.id);
+                localStorage.setItem('onetask_local_users', JSON.stringify(newUsers));
+            }
+            localStorage.removeItem(getLocalDataKey(currentUser.id));
+            setCurrentUser(null);
+            setSettingsModalOpen(false);
+            return { success: true, message: "Account deleted locally." };
+        } catch (e) {
+             return { success: false, message: "Could not delete account." };
+        }
+    };
+
+    try {
+        const fetchPromise = fetch('/api/users', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+            body: JSON.stringify({ 
+                password,
+                email: currentUser.email // IMPORTANT: Pass email for server lookup
+            }),
+        });
+        
+        const timeoutPromise = new Promise<Response>((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout')), 1500)
+        );
+
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
+
+        const contentType = response.headers.get("content-type");
+         if (contentType && contentType.includes("application/json")) {
+             const data = await response.json();
+             if (response.ok) {
+                 setCurrentUser(null);
+                 setSettingsModalOpen(false);
+                 return { success: true, message: "Account deleted successfully." };
+             }
+             return { success: false, message: data.message || "An error occurred." };
+         }
+         throw new Error("API fail");
+    } catch (err) {
+        // Fallback to local delete
+        return performLocalDelete();
     }
-    const updatedUsers = users.filter(u => u.id !== currentUser.id);
-    setUsers(updatedUsers);
-    const newUserData = { ...userData };
-    delete newUserData[currentUser.id];
-    setUserData(newUserData);
-    setCurrentUser(null);
-    setSettingsModalOpen(false);
-    return { success: true, message: "Account deleted successfully." };
   };
 
   const getProjectSortValue = (project: Project) => {
@@ -497,43 +669,21 @@ const App: React.FC = () => {
     return { earliestDueDate, highestPriority, timeForUrgentTask };
   };
 
-  const projectsForDisplay = useMemo(() => {
-    const itemBeingDeleted = itemToUndo || itemToDelete;
-    if (!itemBeingDeleted) return projects;
-
-    if (itemBeingDeleted.type === 'project') {
-      return projects.filter(p => p.id !== itemBeingDeleted.item.id);
-    }
-
-    if (itemBeingDeleted.type === 'task') {
-      const { projectId } = itemBeingDeleted.context;
-      return projects.map(p => {
-        if (p.id === projectId) {
-          return { ...p, tasks: p.tasks.filter(t => t.id !== itemBeingDeleted.item.id) };
-        }
-        return p;
-      });
-    }
-    return projects;
-  }, [projects, itemToUndo, itemToDelete]);
-
   const sortedProjects = useMemo(() => {
-    const projectsToDisplay = projectsForDisplay;
+    if (!settings.isAutoRotationEnabled) return projects;
     
-    if (!settings.isAutoRotationEnabled) return projectsToDisplay;
-    
-    return [...projectsToDisplay].sort((a, b) => {
+    return [...projects].sort((a, b) => {
       const aValue = getProjectSortValue(a);
       const bValue = getProjectSortValue(b);
       if (aValue.earliestDueDate.getTime() !== bValue.earliestDueDate.getTime()) return aValue.earliestDueDate.getTime() - bValue.earliestDueDate.getTime();
       if (aValue.highestPriority !== bValue.highestPriority) return bValue.highestPriority - aValue.highestPriority;
       return bValue.timeForUrgentTask - aValue.timeForUrgentTask;
     });
-  }, [projectsForDisplay, settings.isAutoRotationEnabled]);
+  }, [projects, settings.isAutoRotationEnabled]);
 
   const activeProject = useMemo(() => {
-    return projectsForDisplay.find((c) => c.id === activeProjectId) || null;
-  }, [projectsForDisplay, activeProjectId]);
+    return projects.find((c) => c.id === activeProjectId) || null;
+  }, [projects, activeProjectId]);
 
   // --- Auth Handlers ---
   const handleSignOut = () => {
@@ -541,13 +691,19 @@ const App: React.FC = () => {
       setUserMenuOpen(false);
   };
   
-  const handleAccountCreated = (user: User) => {
+  const handleLoginSuccess = (user: User) => {
       setCurrentUser(user);
       setAuthModalOpen(false);
   }
 
   const handleEditField = (field: EditingField) => {
     setEditingAccountField(field);
+  };
+
+  const getDeletedItemName = () => {
+      if (!deletedItem) return 'Item';
+      if (deletedItem.type === 'project') return deletedItem.item.name;
+      return deletedItem.item.title;
   };
 
   return (
@@ -652,7 +808,8 @@ const App: React.FC = () => {
                   {activeProject ? (
                   <TaskBoard 
                       project={activeProject} 
-                      onAddTask={handleOpenAddTaskModal}
+                      onAddTask={handleOpenAddTask}
+                      onScheduleTask={handleOpenScheduleTask}
                       onDeleteTask={handleDeleteTask}
                       onEditTask={handleOpenEditTaskModal}
                       onCompleteTask={handleCompleteTask}
@@ -687,9 +844,9 @@ const App: React.FC = () => {
       </div>
 
       <UndoToast
-        isVisible={!!itemToUndo}
-        message={`'${getItemNameForUndo()}' deleted.`}
-        onUndo={cancelUndoableDelete}
+        isVisible={!!deletedItem}
+        message={`'${getDeletedItemName()}' deleted.`}
+        onUndo={handleUndo}
       />
 
       {isAddProjectModalOpen && currentUser && (
@@ -700,6 +857,7 @@ const App: React.FC = () => {
           onClose={() => setAddTaskModalOpen(false)}
           onAddTask={handleAddTask}
           initialPriority={taskPriority}
+          isScheduling={isSchedulingTask}
         />
       )}
       {isEditTaskModalOpen && editingTask && currentUser && (
@@ -728,10 +886,8 @@ const App: React.FC = () => {
       )}
       {isAuthModalOpen && !currentUser && (
         <AuthModal
-            users={users}
-            setUsers={setUsers}
             onClose={() => setAuthModalOpen(false)}
-            onAccountCreated={handleAccountCreated}
+            onLoginSuccess={handleLoginSuccess}
         />
       )}
 

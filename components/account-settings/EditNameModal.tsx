@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { User } from '../../types';
 import { XMarkIcon } from '../icons';
@@ -7,7 +8,7 @@ interface EditNameModalProps {
     onUpdateUser: (
         updates: { name?: string; email?: string; newPassword?: string; profilePicture?: string | null },
         currentPassword?: string
-    ) => { success: boolean; message: string };
+    ) => Promise<{ success: boolean; message: string }>;
     onClose: () => void;
 }
 
@@ -16,8 +17,9 @@ const EditNameModal: React.FC<EditNameModalProps> = ({ user, onUpdateUser, onClo
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
         setSuccess('');
@@ -27,7 +29,10 @@ const EditNameModal: React.FC<EditNameModalProps> = ({ user, onUpdateUser, onClo
             return;
         }
 
-        const { success, message } = onUpdateUser({ name: name.trim() }, password);
+        setIsLoading(true);
+        const { success, message } = await onUpdateUser({ name: name.trim() }, password);
+        setIsLoading(false);
+
         if (success) {
             setSuccess(message);
             setTimeout(onClose, 1500);
@@ -60,7 +65,7 @@ const EditNameModal: React.FC<EditNameModalProps> = ({ user, onUpdateUser, onClo
                             value={name}
                             onChange={(e) => setName(e.target.value)}
                             required
-                            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-slate-700 dark:text-slate-200"
+                            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-slate-900 dark:bg-slate-700 dark:text-slate-200"
                         />
                     </div>
                     <div className="mb-4">
@@ -73,7 +78,7 @@ const EditNameModal: React.FC<EditNameModalProps> = ({ user, onUpdateUser, onClo
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             required
-                            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-slate-700 dark:text-slate-200"
+                            className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-slate-900 dark:bg-slate-700 dark:text-slate-200"
                         />
                     </div>
                     
@@ -81,8 +86,8 @@ const EditNameModal: React.FC<EditNameModalProps> = ({ user, onUpdateUser, onClo
                         <button type="button" onClick={onClose} className="px-4 py-2 bg-slate-200 dark:bg-slate-600 text-slate-800 dark:text-slate-200 rounded-md hover:bg-slate-300 dark:hover:bg-slate-500 transition-colors">
                             Cancel
                         </button>
-                        <button type="submit" className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors">
-                            Save Changes
+                        <button type="submit" disabled={isLoading} className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors disabled:opacity-50">
+                            {isLoading ? 'Saving...' : 'Save Changes'}
                         </button>
                     </div>
                 </form>

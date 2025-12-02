@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect } from 'react';
 import { XMarkIcon, SunIcon, MoonIcon, ComputerDesktopIcon } from './icons';
 import ToggleSwitch from './ToggleSwitch';
@@ -22,8 +21,8 @@ interface SettingsModalProps {
   onSaveSettings: (settings: Settings) => void;
   initialSettings: Settings;
   currentUser: User;
-  onUpdateUser: (updates: { name?: string; email?: string; newPassword?: string; profilePicture?: string | null }, currentPassword?: string) => { success: boolean; message: string };
-  onDeleteUser: (password: string) => { success: boolean; message: string };
+  onUpdateUser: (updates: { name?: string; email?: string; newPassword?: string; profilePicture?: string | null }, currentPassword?: string) => Promise<{ success: boolean; message: string }>;
+  onDeleteUser: (password: string) => Promise<{ success: boolean; message: string }>;
   onEditField: (field: EditingField) => void;
   completedTasks: CompletedTask[];
   onPermanentlyDeleteTask: (taskId: string) => void;
@@ -84,6 +83,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onSaveSe
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
   const [deleteError, setDeleteError] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -117,13 +117,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onSaveSe
     { id: 'theme', label: 'Theme' },
   ];
 
-  const handleDeleteAccount = (e: React.FormEvent) => {
+  const handleDeleteAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     setDeleteError('');
-    const { success, message } = onDeleteUser(deletePassword);
+    setIsDeleting(true);
+    const { success, message } = await onDeleteUser(deletePassword);
     if (!success) {
         setDeleteError(message);
     }
+    setIsDeleting(false);
     // On success, App.tsx will handle logout and closing the modal.
   };
 
@@ -221,7 +223,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onSaveSe
                                         onChange={(e) => setDeletePassword(e.target.value)}
                                         required
                                         placeholder="Current Password"
-                                        className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-red-500 dark:bg-slate-700 dark:text-slate-200"
+                                        className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-red-500 bg-white text-slate-900 dark:bg-slate-700 dark:text-slate-200"
                                     />
                                 </div>
                                 <div className="flex justify-end gap-3 mt-4">
@@ -229,15 +231,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onSaveSe
                                         type="button"
                                         onClick={() => setIsConfirmingDelete(false)}
                                         className="px-4 py-2 bg-slate-200 dark:bg-slate-600 text-slate-800 dark:text-slate-200 rounded-md hover:bg-slate-300 dark:hover:bg-slate-500"
+                                        disabled={isDeleting}
                                     >
                                         Cancel
                                     </button>
                                     <button
                                         type="submit"
-                                        disabled={!deletePassword}
+                                        disabled={!deletePassword || isDeleting}
                                         className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        Permanently Delete
+                                        {isDeleting ? 'Deleting...' : 'Permanently Delete'}
                                     </button>
                                 </div>
                             </form>
@@ -282,7 +285,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onSaveSe
                             id="promotion-hours"
                             value={draftSettings.autoPriorityHours}
                             onChange={(e) => setDraftSettings({ ...draftSettings, autoPriorityHours: parseInt(e.target.value, 10) })}
-                            className="w-full sm:w-1/2 px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-slate-700 dark:text-slate-200 disabled:opacity-75"
+                            className="w-full sm:w-1/2 px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-slate-900 dark:bg-slate-700 dark:text-slate-200 disabled:opacity-75"
                             disabled={!draftSettings.isAutoPriorityModeEnabled}
                         >
                             <option value="24">24 hours (1 day)</option>
