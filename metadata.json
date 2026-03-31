@@ -1,0 +1,5 @@
+{
+  "name": "OneTask V3.3 - April 2026",
+  "description": "[Update Log]\n1. Ability to re-order lists in the workspaces view\n2. Mobile project bar UI fix\n3. Bug Fix (Firebase Task Saving)",
+  "requestFramePermissions": []
+}

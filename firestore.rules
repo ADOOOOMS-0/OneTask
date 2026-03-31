@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: userData
+    // Document ID: {userId}
+    // Fields:
+    //   - lists: array of List objects
+    //   - completedTasks: array of CompletedTask objects
+    //   - activeListId: string (optional)
+    //   - activeProjectId: string (optional)
+    //   - isSidebarOpen: boolean
+    //   - settings: object (theme, isAutoPriorityModeEnabled, etc.)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "adooooms5@gmail.com" && request.auth.token.email_verified == true)); // Default admin
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidUserData(data) {
+      return data.lists is list &&
+             data.lists.size() <= 20 &&
+             data.completedTasks is list &&
+             data.completedTasks.size() <= 500 &&
+             data.settings is map &&
+             data.settings.theme in ['light', 'dark', 'system'] &&
+             data.settings.isAutoPriorityModeEnabled is bool &&
+             data.settings.autoPriorityDays is list &&
+             data.settings.autoPriorityHours is number &&
+             data.settings.isAutoRotationEnabled is bool &&
+             (data.activeListId == null || data.activeListId is string) &&
+             (data.activeProjectId == null || data.activeProjectId is string) &&
+             data.isSidebarOpen is bool;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /userData/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUserData(request.resource.data);
+      allow update: if (isOwner(userId) && isValidUserData(request.resource.data)) || isAdmin();
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && hasOnlyAllowedFields(['name', 'email', 'role', 'createdAt']) && request.resource.data.role == 'user';
+      allow update: if (isOwner(userId) && hasOnlyAllowedFields(['name', 'email', 'role', 'createdAt']) && request.resource.data.role == resource.data.role) || isAdmin();
+      allow delete: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "entities": {
+    "UserData": {
+      "title": "User Data",
+      "description": "Stores all user-specific data including lists, projects, tasks, and settings.",
+      "type": "object",
+      "properties": {
+        "lists": {
+          "type": "array",
+          "items": {
+            "$ref": "List"
+          }
+        },
+        "completedTasks": {
+          "type": "array",
+          "items": {
+            "$ref": "CompletedTask"
+          }
+        },
+        "activeListId": {
+          "type": "string"
+        },
+        "activeProjectId": {
+          "type": "string"
+        },
+        "isSidebarOpen": {
+          "type": "boolean"
+        },
+        "settings": {
+          "type": "object",
+          "properties": {
+            "theme": {
+              "type": "string",
+              "enum": ["light", "dark", "system"]
+            },
+            "isAutoPriorityModeEnabled": {
+              "type": "boolean"
+            },
+            "autoPriorityDays": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "autoPriorityHours": {
+              "type": "number"
+            },
+            "isAutoRotationEnabled": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "required": ["lists", "completedTasks", "settings"]
+    },
+    "List": {
+      "title": "List",
+      "description": "A collection of projects.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "icon": { "type": "string" },
+        "projects": { "type": "array", "items": { "$ref": "Project" } },
+        "isPriorityRotationEnabled": { "type": "boolean" }
+      }
+    },
+    "Project": {
+      "title": "Project",
+      "description": "A collection of tasks.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "tasks": { "type": "array", "items": { "$ref": "Task" } }
+      }
+    },
+    "Task": {
+      "title": "Task",
+      "description": "A single task item.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "priority": { "type": "string" },
+        "originalPriority": { "type": "string" },
+        "estimatedTime": { "type": "number" },
+        "autoPromoteDate": { "type": "string" },
+        "scheduledDate": { "type": "string" },
+        "isAutoPriorityExcluded": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "recurrence": { "type": "string" }
+      }
+    },
+    "CompletedTask": {
+      "title": "Completed Task",
+      "description": "A task that has been completed.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "completedAt": { "type": "string" },
+        "projectId": { "type": "string" },
+        "projectName": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/userData/{userId}": {
+      "schema": "UserData",
+      "description": "User-specific application state and data."
+    }
+  }
+}
